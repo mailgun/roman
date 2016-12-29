@@ -102,6 +102,8 @@ func (m *CertificateManager) getCertificateFromCache(hostname string) (*tls.Cert
 		return nil, err
 	}
 
+	// found certificate, decode and rebuild it
+
 	// build the private key (*rsa.PrivateKey) first
 	privateKeyBlock, publicKeyBytes := pem.Decode(certificateBytes)
 
@@ -111,9 +113,12 @@ func (m *CertificateManager) getCertificateFromCache(hostname string) (*tls.Cert
 	}
 
 	// build the certificate chain next
+	var certificateBlock *pem.Block
+	var remainingBytes []byte = publicKeyBytes
 	var certificateChain [][]byte
+
 	for {
-		certificateBlock, remainingBytes := pem.Decode(publicKeyBytes)
+		certificateBlock, remainingBytes = pem.Decode(remainingBytes)
 		certificateChain = append(certificateChain, certificateBlock.Bytes)
 
 		if len(remainingBytes) == 0 {
@@ -121,11 +126,29 @@ func (m *CertificateManager) getCertificateFromCache(hostname string) (*tls.Cert
 		}
 	}
 
+	// build a concatenated certificate chain
+	var buf bytes.Buffer
+	for _, cc := range certificateChain {
+		buf.Write(cc)
+	}
+
+	// parse the chain and get a slice of x509.Certificates.
+	x509Chain, err := x509.ParseCertificates(buf.Bytes())
+	if err != nil {
+		return nil, err
+	}
+
 	// return the tls.Certificate
-	return &tls.Certificate{
+	tlsCertificate := &tls.Certificate{
 		Certificate: certificateChain,
 		PrivateKey:  certificatePrivateKey,
-	}, nil
+		Leaf:        x509Chain[0],
+	}
+
+	// put it back in the in-memory cache
+	m.memoryCache[hostname] = tlsCertificate
+
+	return tlsCertificate, nil
 }
 
 // putCertificateInCache puts a *tls.Certificate in both the in-memory and disk cache.
@@ -212,12 +235,6 @@ func (m *CertificateManager) renewCertificate(hostname string) error {
 		}
 	}
 
-	// we need to renew the certificate so delete it from the cache then go get it again
-	err = m.deleteCertificateFromCache(hostname)
-	if err != nil {
-		return fmt.Errorf("unable to delete certificate from cache for %q: %v", hostname, err)
-	}
-
 	// go get a new certificate from the ACME server
 	certificateI, err, _ := m.group.Do("rcfd", func() (interface{}, error) {
 		return m.ACMEClient.CertificateForDomain(hostname)
@@ -226,6 +243,12 @@ func (m *CertificateManager) renewCertificate(hostname string) error {
 		return fmt.Errorf("unable to request certificate for hostname %q: %v", hostname, err)
 	}
 	certificate = certificateI.(*tls.Certificate)
+
+	// so delete it from the cache (if it's in it)
+	err = m.deleteCertificateFromCache(hostname)
+	if err != nil {
+		return fmt.Errorf("unable to delete certificate from cache for %q: %v", hostname, err)
+	}
 
 	// put the new certificate in the cache
 	err = m.putCertificateInCache(hostname, certificate)
@@ -257,6 +280,7 @@ func (m *CertificateManager) renewCertificatesForever() {
 		if errs != nil {
 			log.Errorf("unable to renew certificates: %v", errs)
 		}
+
 		time.Sleep(24 * time.Hour)
 	}
 }
