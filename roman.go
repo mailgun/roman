@@ -10,19 +10,24 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mailgun/log"
-	"github.com/mailgun/roman/acme"
-
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/net/context"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/mailgun/log"
+	"github.com/mailgun/roman/acme"
+	"github.com/mailgun/timetools"
+)
+
+var (
+	clock timetools.TimeProvider = &timetools.RealTime{} // used to mock time in tests
 )
 
 // CertificateManager will obtain and cache TLS certificates from an ACME server.
 // CertificateManager is inspired by autocert.Manager with the primary difference
 // being pluggable challenge performers.
 type CertificateManager struct {
-	sync.Mutex
+	sync.RWMutex
 
 	// Cache is used to speed up process start up and to avoid hitting any
 	// rate limits imposed by the ACME server.
@@ -32,8 +37,9 @@ type CertificateManager struct {
 	// to obtain tls certificates for.
 	KnownHosts []string
 
-	// ACMEClient wraps a golang.org/x/crypto/acme.Client.
-	ACMEClient acme.Client
+	// ACMEClient is something that implements CertificateForDomainer (simple
+	// wrapper around a golang.org/x/crypto/acme.Client).
+	ACMEClient acme.CertificateForDomainer
 
 	// RenewBefore represents how long before certificate expiration a new
 	// certificate will be requested from the ACME server.
@@ -54,9 +60,9 @@ func (m *CertificateManager) Start() error {
 	// this is a both a blocking call and a function that can potentially take
 	// a lot of time, but it makes sure we have working certificates for
 	// all known hosts before we start the process.
-	err := m.renewCertificates()
-	if err != nil {
-		return err
+	errs := m.renewCertificates()
+	if errs != nil {
+		return fmt.Errorf("unable to start due to the following errors: %v", errs)
 	}
 
 	// kick off a go routine that will update certificates in the background
@@ -74,8 +80,8 @@ func (m *CertificateManager) GetCertificate(clientHello *tls.ClientHelloInfo) (*
 
 // getCertificateFromCache returns a certificate from either an in-memory cache or disk cache.
 func (m *CertificateManager) getCertificateFromCache(hostname string) (*tls.Certificate, error) {
-	m.Lock()
-	defer m.Unlock()
+	m.RLock()
+	defer m.RUnlock()
 
 	if m.memoryCache == nil {
 		m.memoryCache = make(map[string]*tls.Certificate)
@@ -190,55 +196,66 @@ func (m *CertificateManager) deleteCertificateFromCache(hostname string) error {
 	return m.Cache.Delete(ctx, hostname)
 }
 
-// renewCertificates loops over all hostnames and makes sure they are all valid and cached.
-func (m *CertificateManager) renewCertificates() error {
-	for _, hostname := range m.KnownHosts {
-		certificate, err := m.getCertificateFromCache(hostname)
+func (m *CertificateManager) renewCertificate(hostname string) error {
+	certificate, err := m.getCertificateFromCache(hostname)
 
-		// if we got an error, and it was something other than a cache miss, return it right away
-		if err != nil && err != autocert.ErrCacheMiss {
-			return err
-		}
+	// if we got an error, and it was something other than a cache miss, return it right away
+	if err != nil && err != autocert.ErrCacheMiss {
+		return err
+	}
 
-		// if we didn't get any error, check if we need to renew the certificate
-		if err == nil {
-			// if we don't need to renew, move on to the next one
-			if needToRenew(certificate.Leaf.NotAfter, m.RenewBefore) == false {
-				continue
-			}
+	// if we didn't get any error, check if we need to renew the certificate
+	if err == nil {
+		// if we don't need to renew, move on to the next one
+		if needToRenew(certificate.Leaf.NotAfter, m.RenewBefore) == false {
+			return nil
 		}
+	}
 
-		// we need to renew the certificate so delete it from the cache then go get it again
-		err = m.deleteCertificateFromCache(hostname)
-		if err != nil {
-			return fmt.Errorf("unable to delete certificate from cache for %q: %v", hostname, err)
-		}
+	// we need to renew the certificate so delete it from the cache then go get it again
+	err = m.deleteCertificateFromCache(hostname)
+	if err != nil {
+		return fmt.Errorf("unable to delete certificate from cache for %q: %v", hostname, err)
+	}
 
-		// go get a new certificate from the ACME server
-		certificateI, err, _ := m.group.Do("rcfd", func() (interface{}, error) {
-			return m.ACMEClient.CertificateForDomain(hostname)
-		})
-		if err != nil {
-			return fmt.Errorf("unable to request certificate for hostname %q: %v", hostname, err)
-		}
-		certificate = certificateI.(*tls.Certificate)
+	// go get a new certificate from the ACME server
+	certificateI, err, _ := m.group.Do("rcfd", func() (interface{}, error) {
+		return m.ACMEClient.CertificateForDomain(hostname)
+	})
+	if err != nil {
+		return fmt.Errorf("unable to request certificate for hostname %q: %v", hostname, err)
+	}
+	certificate = certificateI.(*tls.Certificate)
 
-		// put the new certificate in the cache
-		err = m.putCertificateInCache(hostname, certificate)
-		if err != nil {
-			return fmt.Errorf("unable to put certificate in cache for %q: %v", hostname, err)
-		}
+	// put the new certificate in the cache
+	err = m.putCertificateInCache(hostname, certificate)
+	if err != nil {
+		return fmt.Errorf("unable to put certificate in cache for %q: %v", hostname, err)
 	}
 
 	return nil
 }
 
+// renewCertificates loops over all hostnames and makes sure they are all valid and cached.
+func (m *CertificateManager) renewCertificates() []error {
+	var errs []error
+
+	for _, hostname := range m.KnownHosts {
+		err := m.renewCertificate(hostname)
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errs
+}
+
 // renewCertificatesForever calls renewCertificates every 24 hours.
 func (m *CertificateManager) renewCertificatesForever() {
 	for {
-		err := m.renewCertificates()
-		if err != nil {
-			log.Errorf("unable to renew certificate: %v", err)
+		errs := m.renewCertificates()
+		if errs != nil {
+			log.Errorf("unable to renew certificates: %v", errs)
 		}
 		time.Sleep(24 * time.Hour)
 	}
@@ -246,5 +263,5 @@ func (m *CertificateManager) renewCertificatesForever() {
 
 // needToRenew will return true if it's time to renew a certificate.
 func needToRenew(notAfter time.Time, renewBefore time.Duration) bool {
-	return time.Now().Add(renewBefore).After(notAfter)
+	return clock.UtcNow().Add(renewBefore).After(notAfter)
 }

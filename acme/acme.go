@@ -131,6 +131,18 @@ func requestCertificate(acmeClient *acme.Client, hostname string) (*tls.Certific
 		return nil, err
 	}
 
+	// build a concatenated certificate chain
+	var buf bytes.Buffer
+	for _, cc := range certificateChain {
+		buf.Write(cc)
+	}
+
+	// parse the chain and get a slice of x509.Certificates.
+	x509Chain, err := x509.ParseCertificates(buf.Bytes())
+	if err != nil {
+		return nil, err
+	}
+
 	// validate the chain to make sure the certificate will actually work
 	err = validateCertificateChain(hostname, certificateChain)
 	if err != nil {
@@ -140,6 +152,7 @@ func requestCertificate(acmeClient *acme.Client, hostname string) (*tls.Certific
 	return &tls.Certificate{
 		Certificate: certificateChain,
 		PrivateKey:  certificatePrivateKey,
+		Leaf:        x509Chain[0],
 	}, nil
 }
 

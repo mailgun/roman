@@ -28,7 +28,7 @@ The following configuration information is needed for the AWS Route 53 performer
 
 A sample policy:
 
-```
+```json
 {
     "Version": "2012-10-17",
     "Statement": [
