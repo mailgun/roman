@@ -80,7 +80,7 @@ func main() {
 	var configurationPath = flag.String("configuration-path", ".roman.configuration", "path to roman configuration file")
 	var hostname = flag.String("hostname", "", "hostname for certificate to request")
 	var debugMode = flag.Bool("debug-mode", true, "in debug mode, primer reaches out debug LE servers")
-
+	var hostport = flag.String("hostport", ":443", "hostname:port that the local server should listen on")
 	flag.Parse()
 
 	// hostname is always required!
@@ -126,7 +126,7 @@ func main() {
 		os.Exit(255)
 	}
 
-	fmt.Printf("Roman: CertificateManager started, starting web server and listening...\n")
+	fmt.Printf("Roman: CertificateManager started, starting web server and listening on %v...\n", *hostport)
 
 	// define a handler that will log every request
 	http.HandleFunc("/", handler)
@@ -134,7 +134,7 @@ func main() {
 	// start the http server a *tls.Config that uses the certificate manager
 	// to obtain certificates
 	s := &http.Server{
-		Addr:      ":https",
+		Addr:      *hostport,
 		TLSConfig: &tls.Config{GetCertificate: m.GetCertificate},
 	}
 	err = s.ListenAndServeTLS("", "")
