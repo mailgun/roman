@@ -9,6 +9,7 @@ import (
     "os"
     "net/http"
 
+	golang_acme "golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 
     "github.com/mailgun/roman"
@@ -21,7 +22,7 @@ func main() {
     m := roman.CertificateManager{
       ACMEClient:  &acme.Client{
           Directory:          acme.LetsEncryptProduction,
-          AgreeTOS:           acme.AcceptTOS,
+          AgreeTOS:           golang_acme.AcceptTOS,
           Email:              "foo@example.com",
           ChallengePerformer: &challenge.Route53 {
              Region:           "us-east-1",
