@@ -53,7 +53,8 @@ func createClient(directory string, email string, agreeTOS func(tosURL string) b
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 
-	// create disposable key pair
+	// create disposable key pair.
+	// TODO: consider not using disposable accounts
 	keypair, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, err
@@ -68,7 +69,8 @@ func createClient(directory string, email string, agreeTOS func(tosURL string) b
 		Contact: []string{"mailto:" + email},
 	}
 
-	// register and get real account back
+	// register returns a real account, but we throw it away because
+	// we use disposable accounts
 	_, err = client.Register(ctx, &contactAccount, agreeTOS)
 	if err != nil {
 		return nil, err

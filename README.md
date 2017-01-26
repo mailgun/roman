@@ -16,40 +16,42 @@ import (
     "github.com/mailgun/roman/challenge"
 )
 
-// create a certificate manager
-m := roman.CertificateManager{
-  ACMEClient:  &acme.Client{
-      Directory:          acme.LetsEncryptProduction,
-      AgreeTOS:           acme.AcceptTOS,
-      Email:              "foo@example.com",
-      ChallengePerformer: &challenge.Route53 {
-         Region:           "us-east-1",
-         AccessKeyID:      "AK000000000000000000",
-         SecretAccessKey:  "a000000000000000000000000000000000000000",
-         HostedZoneID:     "Z0000000000000",
-         HostedDomainName: "example.com.",
-         WaitForSync:      true,
-      },
-   },
-   Cache:       autocert.DirCache(".")
-   KnownHosts:  []string{"foo.example.com"},
-   RenewBefore: 30 * 24 * time.Hour, // 30 days
-}
+func main() {
+    // create a certificate manager
+    m := roman.CertificateManager{
+      ACMEClient:  &acme.Client{
+          Directory:          acme.LetsEncryptProduction,
+          AgreeTOS:           acme.AcceptTOS,
+          Email:              "foo@example.com",
+          ChallengePerformer: &challenge.Route53 {
+             Region:           "us-east-1",
+             AccessKeyID:      "AK000000000000000000",
+             SecretAccessKey:  "a000000000000000000000000000000000000000",
+             HostedZoneID:     "Z0000000000000",
+             HostedDomainName: "example.com.",
+             WaitForSync:      true,
+          },
+       },
+       Cache:       autocert.DirCache(".")
+       KnownHosts:  []string{"foo.example.com"},
+       RenewBefore: 30 * 24 * time.Hour, // 30 days
+    }
 
-// start the certificate manager, this is a blocking call that
-// ensures that certificates are ready before the server starts
-// accepting connections
-err := m.Start()
-if err != nil {
-    fmt.Printf("Unable to start the CertificateManager: %v", err)
-    os.Exit(255)
-}
+    // start the certificate manager, this is a blocking call that
+    // ensures that certificates are ready before the server starts
+    // accepting connections
+    err := m.Start()
+    if err != nil {
+        fmt.Printf("Unable to start the CertificateManager: %v", err)
+        os.Exit(255)
+    }
 
-// start the http server a *tls.Config that uses the certificate manager
-// to obtain certificates
-s := &http.Server{
-    Addr: ":https",
-    TLSConfig: &tls.Config{GetCertificate: m.GetCertificate},
+    // start the http server with a *tls.Config that uses the certificate manager
+    // to obtain certificates
+    s := &http.Server{
+        Addr: ":https",
+        TLSConfig: &tls.Config{GetCertificate: m.GetCertificate},
+    }
+    s.ListenAndServeTLS("", "")
 }
-s.ListenAndServeTLS("", "")
 ```
