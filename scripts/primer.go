@@ -81,6 +81,8 @@ func main() {
 	var hostname = flag.String("hostname", "", "hostname for certificate to request")
 	var debugMode = flag.Bool("debug-mode", true, "in debug mode, primer reaches out debug LE servers")
 	var hostport = flag.String("hostport", ":443", "hostname:port that the local server should listen on")
+	var renewBefore = flag.Duration("renew-before", 30*24*time.Hour, "how long before certificate expiration a new certificate will be requested")
+
 	flag.Parse()
 
 	// hostname is always required!
@@ -112,7 +114,7 @@ func main() {
 		},
 		Cache:       autocert.DirCache(*cachePath),
 		KnownHosts:  []string{*hostname},
-		RenewBefore: 30 * 24 * time.Hour, // 30 days
+		RenewBefore: *renewBefore,
 	}
 
 	fmt.Printf("Roman: Starting CertificateManager...\n")
