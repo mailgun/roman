@@ -103,46 +103,9 @@ func (m *CertificateManager) getCertificateFromCache(hostname string) (*tls.Cert
 	}
 
 	// found certificate, decode and rebuild it
-
-	// build the private key (*rsa.PrivateKey) first
-	privateKeyBlock, publicKeyBytes := pem.Decode(certificateBytes)
-
-	certificatePrivateKey, err := x509.ParsePKCS1PrivateKey(privateKeyBlock.Bytes)
+	tlsCertificate, err := bytesToCertificate(certificateBytes)
 	if err != nil {
 		return nil, err
-	}
-
-	// build the certificate chain next
-	var certificateBlock *pem.Block
-	var remainingBytes []byte = publicKeyBytes
-	var certificateChain [][]byte
-
-	for {
-		certificateBlock, remainingBytes = pem.Decode(remainingBytes)
-		certificateChain = append(certificateChain, certificateBlock.Bytes)
-
-		if len(remainingBytes) == 0 {
-			break
-		}
-	}
-
-	// build a concatenated certificate chain
-	var buf bytes.Buffer
-	for _, cc := range certificateChain {
-		buf.Write(cc)
-	}
-
-	// parse the chain and get a slice of x509.Certificates.
-	x509Chain, err := x509.ParseCertificates(buf.Bytes())
-	if err != nil {
-		return nil, err
-	}
-
-	// return the tls.Certificate
-	tlsCertificate := &tls.Certificate{
-		Certificate: certificateChain,
-		PrivateKey:  certificatePrivateKey,
-		Leaf:        x509Chain[0],
 	}
 
 	// put it back in the in-memory cache
@@ -163,43 +126,17 @@ func (m *CertificateManager) putCertificateInCache(hostname string, certificate 
 
 	m.memoryCache[hostname] = certificate
 
-	// next create buf which will hold the bytes for the tls.Certificate that we will write to disk
-	var buf bytes.Buffer
-
-	// get the private key bytes in pkcs1 format
-	privateKeyBytes := x509.MarshalPKCS1PrivateKey(certificate.PrivateKey.(*rsa.PrivateKey))
-
-	// create a pem block that contains the private key
-	privateKeyPEMBlock := pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: privateKeyBytes,
-	}
-
-	// write private key to buf
-	err := pem.Encode(&buf, &privateKeyPEMBlock)
+	// get bytes
+	certificateBytes, err := certificateToBytes(certificate)
 	if err != nil {
 		return err
-	}
-
-	// loop over the certificate chain and make them into pem blocks
-	// and write them to buf
-	for _, certificateBytes := range certificate.Certificate {
-		certificatePEMBlock := pem.Block{
-			Type:  "CERTIFICATE",
-			Bytes: certificateBytes,
-		}
-
-		err = pem.Encode(&buf, &certificatePEMBlock)
-		if err != nil {
-			return err
-		}
 	}
 
 	// write them to disk
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	return m.Cache.Put(ctx, hostname, buf.Bytes())
+	return m.Cache.Put(ctx, hostname, certificateBytes)
 }
 
 // deleteCertificateFromCache remove the certificate from both the in-memory cache and from disk.
@@ -288,4 +225,83 @@ func (m *CertificateManager) renewCertificatesForever() {
 // needToRenew will return true if it's time to renew a certificate.
 func needToRenew(notAfter time.Time, renewBefore time.Duration) bool {
 	return clock.UtcNow().Add(renewBefore).After(notAfter)
+}
+
+func bytesToCertificate(certificateBytes []byte) (*tls.Certificate, error) {
+	// build the private key (*rsa.PrivateKey) first
+	privateKeyBlock, publicKeyBytes := pem.Decode(certificateBytes)
+
+	certificatePrivateKey, err := x509.ParsePKCS1PrivateKey(privateKeyBlock.Bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	// build the certificate chain next
+	var certificateBlock *pem.Block
+	var remainingBytes []byte = publicKeyBytes
+	var certificateChain [][]byte
+
+	for {
+		certificateBlock, remainingBytes = pem.Decode(remainingBytes)
+		certificateChain = append(certificateChain, certificateBlock.Bytes)
+
+		if len(remainingBytes) == 0 {
+			break
+		}
+	}
+
+	// build a concatenated certificate chain
+	var buf bytes.Buffer
+	for _, cc := range certificateChain {
+		buf.Write(cc)
+	}
+
+	// parse the chain and get a slice of x509.Certificates.
+	x509Chain, err := x509.ParseCertificates(buf.Bytes())
+	if err != nil {
+		return nil, err
+	}
+
+	// return the tls.Certificate
+	return &tls.Certificate{
+		Certificate: certificateChain,
+		PrivateKey:  certificatePrivateKey,
+		Leaf:        x509Chain[0],
+	}, nil
+}
+
+func certificateToBytes(tlsCertificate *tls.Certificate) ([]byte, error) {
+	// next create buf which will hold the bytes for the tls.Certificate that we will write to disk
+	var buf bytes.Buffer
+
+	// get the private key bytes in pkcs1 format
+	privateKeyBytes := x509.MarshalPKCS1PrivateKey(tlsCertificate.PrivateKey.(*rsa.PrivateKey))
+
+	// create a pem block that contains the private key
+	privateKeyPEMBlock := pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: privateKeyBytes,
+	}
+
+	// write private key to buf
+	err := pem.Encode(&buf, &privateKeyPEMBlock)
+	if err != nil {
+		return nil, err
+	}
+
+	// loop over the certificate chain and make them into pem blocks
+	// and write them to buf
+	for _, certificateBytes := range tlsCertificate.Certificate {
+		certificatePEMBlock := pem.Block{
+			Type:  "CERTIFICATE",
+			Bytes: certificateBytes,
+		}
+
+		err = pem.Encode(&buf, &certificatePEMBlock)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return buf.Bytes(), nil
 }
